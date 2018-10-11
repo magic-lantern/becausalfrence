@@ -1,0 +1,46 @@
+---
+title: "CEM via SQL"
+author: "Seth Russell"
+date: "10/11/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(bigrquery)
+```
+
+## Coarsened Exact Matching using SQL 
+
+Explorations of matching methods for causal inference.
+
+Primary goal is to come up and test SQL statements/functions for matching.
+
+There are two packages that make running queries in BigQuery from R easier:
+
+* __bigQueryR__: http://code.markedmondson.me/bigQueryR/
+* __bigrquery__: https://github.com/r-dbi/bigrquery ; also see https://www.tidyverse.org/articles/2018/04/bigrquery-1-0-0/
+
+Alternatively you could use the REST API directly via package such as _httr_
+
+
+```{r query}
+query <- "
+  SELECT 
+    subject_id,
+    hadm_id,
+    admittime,
+    dischtime,
+    admission_type,
+    admission_location,
+    insurance,
+    marital_status,
+    ethnicity
+  FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` LIMIT 1000"
+
+# ICD code list - need to join admissions table against `sandbox-nlp.MIMIC3_V1_4.D_ICD_DIAGNOSES`
+# and set boolean for those that have one of these codes
+# "0031","0202","0223","0270","0271","0362","0380","03810","03811","03812","03819","0382","0383","03840","03841","03842","03843","03844","03849","0388","0389","04082","0545","09889","1125","77181","78552","78559","78559","99590","99591","99592","99593","99594","99802"
+
+```
+
