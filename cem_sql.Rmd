@@ -2,12 +2,16 @@
 title: "CEM via SQL"
 author: "Seth Russell"
 date: "10/11/2018"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+# install.packages('bigrquery')
 library(bigrquery)
+project <- "sandbox-nlp" # put your project ID here
 ```
 
 ## Coarsened Exact Matching using SQL 
@@ -23,24 +27,250 @@ There are two packages that make running queries in BigQuery from R easier:
 
 Alternatively you could use the REST API directly via package such as _httr_
 
+As a sample dataset, we're looking at MIMIC III patients that have a sepsis diagnosis. A positive sepsis diagnosis is defined as having one of the following ICD 9 codes:
 
-```{r query}
-query <- "
-  SELECT 
-    subject_id,
-    hadm_id,
-    admittime,
-    dischtime,
-    admission_type,
-    admission_location,
-    insurance,
-    marital_status,
-    ethnicity
-  FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` LIMIT 1000"
+"0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"
 
-# ICD code list - need to join admissions table against `sandbox-nlp.MIMIC3_V1_4.D_ICD_DIAGNOSES`
-# and set boolean for those that have one of these codes
-# "0031","0202","0223","0270","0271","0362","0380","03810","03811","03812","03819","0382","0383","03840","03841","03842","03843","03844","03849","0388","0389","04082","0545","09889","1125","77181","78552","78559","78559","99590","99591","99592","99593","99594","99802"
 
+To see frequency of sepsis diagnoses, see the following query:
+
+```{r sepsis_counts_query}
+query <- '
+  SELECT icd9_code, count(1) 
+  FROM `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD`
+  where icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802")
+  group by icd9_code
+  order by count(1) desc'
+
+# now actually execute query...
+gbq_cursor <- bq_project_query(project, query)
+sepsis_count_result <- bq_table_download(gbq_cursor)
+head(sepsis_count_result, n=10)
 ```
 
+This next block is just some SQL statements used to figure out the cohort.
+
+```{sql eval=FALSE}
+SELECT a.row_id, a.subject_id, a.hadm_id
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left join 
+  `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d on
+    d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+where d.icd9_code = "0031"
+-- should be only 1 record matching criteria
+
+
+-- this gets the one row and the lowest sequence number (most important sepsis diagnosis)
+-- however want to get everyone, not just those with sepsis diagnosis
+-- e.g hadm_id 127666 should only show up once - as a sepsis positive admission
+ SELECT a.subject_id,
+    a.hadm_id,
+    d.icd9_code,
+    d.seq_num
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+  where icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802")
+ and a.subject_id = 1024
+ and seq_num = (select min(seq_num) from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dmin where dmin.hadm_id = a.hadm_id and dmin.subject_id = a.subject_id and icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+ 
+
+-- get people that have any sepsis diagnosis during their stay.
+ SELECT 
+    a.subject_id,
+    a.hadm_id,
+    a.admittime,
+    a.dischtime,
+    a.admission_type,
+    a.admission_location,
+    a.insurance,
+    a.marital_status,
+    a.ethnicity,
+    d.icd9_code,
+    d.seq_num
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+  where exists (select 'x' from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dd
+  where dd.subject_id = a.subject_id and dd.hadm_id = a.hadm_id
+  and dd.icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and seq_num = (select min(seq_num) from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dmin where dmin.hadm_id = a.hadm_id and dmin.subject_id = a.subject_id and icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and a.subject_id = 5030
+UNION ALL
+SELECT distinct 
+    a.subject_id,
+    a.hadm_id,
+    a.admittime,
+    a.dischtime,
+    a.admission_type,
+    a.admission_location,
+    a.insurance,
+    a.marital_status,
+    a.ethnicity,
+    '',
+    null
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+where not exists (select 'x' from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dd
+  where dd.subject_id = a.subject_id and dd.hadm_id = a.hadm_id
+  and dd.icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+  and a.subject_id = 5030
+
+ 
+/* 
+ [
+  {
+    "subject_id": "1024",
+    "hadm_id": "127666",
+    "icd9_code": "78559",
+    "seq_num": "3"
+  }
+]
+*/
+ 
+ 
+```
+
+
+??? what treatment to consider ???
+how about having a "Percutaneous Transluminal Coronary Angioplasty (PTCA)" procdure:
+https://www.qualityindicators.ahrq.gov/Downloads/Modules/IQI/V41/TechSpecs/IQI%2006%20and%20IQI%2030%20Percutaneous%20Transluminal%20Coronary%20Angioplasty.pdf
+
+According to AHRQ, these ICD 9 Procedure Codes indicate a PTCA: "0066", "3601", "3602", "3605"
+
+```{r full_sql_cohort}
+
+query <- '
+-- retrieve all sepsis positive patients and if they had the PTCA procedure
+-- only about 100 patients that had PTCA that had sepsis
+-- first select is those with sepsis but not a PTCA procedure
+ SELECT 
+    a.subject_id,
+    a.hadm_id,
+    a.admittime,
+    a.dischtime,
+    a.admission_type,
+    a.admission_location,
+    a.insurance,
+    a.marital_status,
+    a.ethnicity,
+    "0" as ptca,
+    "1" as sepsis,
+    d.icd9_code,
+    d.seq_num
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+  where exists (select "x" from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dd
+  where dd.subject_id = a.subject_id and dd.hadm_id = a.hadm_id
+  and dd.icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and seq_num = (select min(seq_num) from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dmin where dmin.hadm_id = a.hadm_id and dmin.subject_id = a.subject_id and icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and not exists (
+  select "x" from `sandbox-nlp.MIMIC3_V1_4.PROCEDURES_ICD` p
+  where icd9_code in ("0066", "3601", "3602", "3605")
+  and p.subject_id = a.subject_id and p.hadm_id = a.hadm_id
+)
+UNION ALL
+-- this select retrieves those with sepsis and a PTCA procedure
+ SELECT 
+    a.subject_id,
+    a.hadm_id,
+    a.admittime,
+    a.dischtime,
+    a.admission_type,
+    a.admission_location,
+    a.insurance,
+    a.marital_status,
+    a.ethnicity,
+    "1" as ptca,
+    "1" as sepsis,
+    d.icd9_code,
+    d.seq_num
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+  where exists (select "x" from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dd
+  where dd.subject_id = a.subject_id and dd.hadm_id = a.hadm_id
+  and dd.icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and seq_num = (select min(seq_num) from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dmin where dmin.hadm_id = a.hadm_id and dmin.subject_id = a.subject_id and icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and exists (
+  select "x" from `sandbox-nlp.MIMIC3_V1_4.PROCEDURES_ICD` p
+  where icd9_code in ("0066", "3601", "3602", "3605")
+  and p.subject_id = a.subject_id and p.hadm_id = a.hadm_id
+)
+UNION ALL
+-- retrieve those without a sepsis diagnosis nor PTCA
+ SELECT distinct
+    a.subject_id,
+    a.hadm_id,
+    a.admittime,
+    a.dischtime,
+    a.admission_type,
+    a.admission_location,
+    a.insurance,
+    a.marital_status,
+    a.ethnicity,
+    "0" as ptca,
+    "0" as sepsis,
+    "0" as icd9_code,
+    null as seq_num
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+  where not exists (select "x" from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dd
+  where dd.subject_id = a.subject_id and dd.hadm_id = a.hadm_id
+  and dd.icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and not exists (
+  select "x" from `sandbox-nlp.MIMIC3_V1_4.PROCEDURES_ICD` p
+  where icd9_code in ("0066", "3601", "3602", "3605")
+  and p.subject_id = a.subject_id and p.hadm_id = a.hadm_id
+)
+UNION ALL
+-- retrieve those without a sepsis diagnosis but had a PTCA procedure
+ SELECT distinct
+    a.subject_id,
+    a.hadm_id,
+    a.admittime,
+    a.dischtime,
+    a.admission_type,
+    a.admission_location,
+    a.insurance,
+    a.marital_status,
+    a.ethnicity,
+    "1" as ptca,
+    "0" as sepsis,
+    "0" as icd9_code,
+    null as seq_num
+FROM `sandbox-nlp.MIMIC3_V1_4.ADMISSIONS` a left outer join `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` d
+  on d.hadm_id = a.hadm_id and
+    d.subject_id = a.subject_id
+  where not exists (select "x" from `sandbox-nlp.MIMIC3_V1_4.DIAGNOSES_ICD` dd
+  where dd.subject_id = a.subject_id and dd.hadm_id = a.hadm_id
+  and dd.icd9_code in ("0031", "0202", "0223", "0270", "0271", "0362", "0380", "03810", "03811", "03812", "03819", "0382", "0383", "03840", "03841", "03842", "03843", "03844", "03849", "0388", "0389", "04082", "0545", "09889", "1125", "77181", "78552", "78559", "78559", "99590", "99591", "99592", "99593", "99594", "99802"))
+and exists (
+  select "x" from `sandbox-nlp.MIMIC3_V1_4.PROCEDURES_ICD` p
+  where icd9_code in ("0066", "3601", "3602", "3605")
+  and p.subject_id = a.subject_id and p.hadm_id = a.hadm_id
+)
+order by subject_id, hadm_id'
+
+gbq_cursor <- bq_project_query(project, query)
+cohort <- bq_table_download(gbq_cursor)
+
+prevtopt <- getOption("tibble.width")
+options(tibble.width = 110)
+prevwopt <- getOption("width")
+options(width = 110)
+print(cohort)
+options(tibble.width = prevtopt)
+options(width = prevwopt)
+```
+
+## References
+
+"Causal Inference without Balance Checking: Coarsened Exact Matching" https://raw.githubusercontent.com/cran/MatchIt/master/R/matchit2_methods.R
+
+"Multivariate Matching Methods That Are Monotonic Imbalance Bounding" http://gking.harvard.edu/files/gking/files/cem_jasa.pdf
+
+https://gking.harvard.edu/files/political_analysis-2011-iacus-pan_mpr013.pdf

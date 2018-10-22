@@ -4,6 +4,11 @@
 # https://www.cms.gov/Medicare/Coding/ICD10/Downloads/2018-ICD-10-PCS-General-Equivalence-Mappings.zip
 #
 # Download files and save to ./data/, then unzip
+# these next lines should download and extract, but if there is a problem, try manually downloading from the CMS website
+download.file('https://www.cms.gov/Medicare/Coding/ICD10/Downloads/2018-ICD-10-CM-General-Equivalence-Mappings.zip', './data/2018-ICD-10-CM-General-Equivalence-Mappings.zip')
+untar('./data/2018-ICD-10-CM-General-Equivalence-Mappings.zip', exdir='./data/2018-ICD-10-CM-General-Equivalence-Mappings')
+download.file('https://www.cms.gov/Medicare/Coding/ICD10/Downloads/2018-ICD-10-PCS-General-Equivalence-Mappings.zip', './data/2018-ICD-10-PCS-General-Equivalence-Mappings.zip')
+untar('./data/2018-ICD-10-PCS-General-Equivalence-Mappings.zip', exdir='./data/2018-ICD-10-PCS-General-Equivalence-Mappings')
 
 # ICD 10 CM (Diagnosis codes) to ICD 9
 library(data.table)
